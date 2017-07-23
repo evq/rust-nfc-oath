@@ -1,0 +1,13 @@
+[package]
+authors = ["eV <ev@7pr.xyz>"]
+build = "build.rs"
+links = "nfc"
+name = "nfc-oath"
+version = "0.1.0"
+
+[dependencies]
+byteorder = "1"
+chrono = "0.4"
+libc = "0.2.0"
+log = "0.3.8"
+nfc = "0.1.11"
