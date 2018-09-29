@@ -1,10 +1,9 @@
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 extern crate byteorder;
-extern crate chrono;
 extern crate nfc;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use chrono::{DateTime, Utc};
 use nfc::context;
 use nfc::device;
 use nfc::ffi;
@@ -15,24 +14,59 @@ use std::fmt;
 use std::io::{Cursor, Read, Write};
 use std::mem;
 use std::ptr;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, SystemTime};
+
     #[test]
-    fn it_works() {
-    }
+    fn it_works() {}
 
     #[test]
     fn code_formatter_works() {
-        let code = ::OathCode{digits: ::OathDigits::Six, value: 595641143, expiration: 0, steam: false };
+        let code = ::OathCode {
+            digits: ::OathDigits::Six,
+            value: 595641143,
+            expiration: 0,
+            steam: false,
+        };
         assert!(format!("{}", code) == "641143");
     }
+
     #[test]
     fn parse_tlv_works() {
         let resp = ::parse_tlv(&vec![0x76, 0x05, 0x06, 0x23, 0x80, 0xc3, 0x37, 0x90, 0x00]);
         println!("{:?}", resp);
     }
+
+    #[test]
+    fn time_challenge_works() {
+        let vectors: &[(Duration, Vec<u8>)] = &[
+            (
+                Duration::new(0, 0),
+                vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            ),
+            (
+                Duration::new(12345678, 0),
+                vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x47, 0x82],
+            ),
+            (
+                Duration::new(1484223461, 264495800),
+                vec![0x00, 0x00, 0x00, 0x00, 0x02, 0xf2, 0xea, 0x43],
+            ),
+        ];
+
+        for i in 0..vectors.len() {
+            let (dur, ref answer) = vectors[i];
+
+            let time = SystemTime::UNIX_EPOCH + dur;
+            let result = ::time_challenge(Some(time));
+
+            assert!(*answer == result);
+        }
+    }
+
 }
 
 pub enum Tag {
@@ -172,25 +206,44 @@ pub fn parse_tlv(data: &[u8]) -> HashMap<u8, Vec<u8>> {
     map
 }
 
-pub fn time_challenge(datetime: Option<DateTime<Utc>>) -> Vec<u8> {
+pub fn time_challenge(datetime: Option<SystemTime>) -> Vec<u8> {
     let ts = match datetime {
-        Some(datetime) => datetime.timestamp() / 30,
-        None => Utc::now().timestamp() / 30,
+        Some(datetime) => {
+            datetime
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                / 30
+        }
+        None => {
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                / 30
+        }
     };
     let mut buf = vec![];
-    buf.write_u32::<BigEndian>(ts as u32).unwrap();
+    buf.write_u64::<BigEndian>(ts).unwrap();
     buf
 }
 
 impl fmt::Display for OathCode {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         const STEAM_CHAR_TABLE_LEN: u32 = 26;
-        const STEAM_CHAR_TABLE: [char; STEAM_CHAR_TABLE_LEN as usize] = ['2', '3', '4', '5', '6', '7', '8', '9', 'B', 'C', 'D', 'F', 'G', 'H', 'J', 'K', 'M', 'N', 'P', 'Q', 'R', 'T', 'V', 'W', 'X', 'Y'];
+        const STEAM_CHAR_TABLE: [char; STEAM_CHAR_TABLE_LEN as usize] = [
+            '2', '3', '4', '5', '6', '7', '8', '9', 'B', 'C', 'D', 'F', 'G', 'H', 'J', 'K', 'M',
+            'N', 'P', 'Q', 'R', 'T', 'V', 'W', 'X', 'Y',
+        ];
         let mut code = self.value;
         if self.steam {
             let mut str = String::new();
             for _i in 0..5 {
-                str.push(*STEAM_CHAR_TABLE.get((code % STEAM_CHAR_TABLE_LEN) as usize).unwrap());
+                str.push(
+                    *STEAM_CHAR_TABLE
+                        .get((code % STEAM_CHAR_TABLE_LEN) as usize)
+                        .unwrap(),
+                );
                 code /= STEAM_CHAR_TABLE_LEN;
             }
             try!(fmt.write_str(&str));
@@ -199,7 +252,8 @@ impl fmt::Display for OathCode {
             match self.digits {
                 OathDigits::Six => write!(fmt, "{:06}", code),
                 OathDigits::Eight => write!(fmt, "{:08}", code),
-            }.unwrap();
+            }
+            .unwrap();
         }
         Ok(())
     }
@@ -207,13 +261,14 @@ impl fmt::Display for OathCode {
 
 impl OathCredential {
     pub fn new(name: &str, oath_type: OathType, touch: bool, algo: OathAlgo) -> OathCredential {
-        OathCredential{name: name.to_string(), 
-                       code: Err("No code calculated yet".to_string()), 
-                       oath_type: oath_type, 
-                       touch: touch, 
-                       algo: algo, 
-                       hidden: name.starts_with("_hidden:"), 
-                       steam: name.starts_with("Steam:")
+        OathCredential {
+            name: name.to_string(),
+            code: Err("No code calculated yet".to_string()),
+            oath_type: oath_type,
+            touch: touch,
+            algo: algo,
+            hidden: name.starts_with("_hidden:"),
+            steam: name.starts_with("Steam:"),
         }
     }
 }
@@ -227,7 +282,7 @@ impl OathController {
         }
 
         nfc::init(&mut context);
-        
+
         debug!("libnfc version: {}", ::misc::version());
 
         let device = nfc::open(context, ptr::null());
@@ -241,7 +296,10 @@ impl OathController {
 
         device::set_property_bool(device, ffi::Enum_Unnamed1::NP_AUTO_ISO14443_4, 1);
 
-        Ok(OathController{ context: context, device: device })
+        Ok(OathController {
+            context: context,
+            device: device,
+        })
     }
 
     pub fn close(&self) {
@@ -249,24 +307,34 @@ impl OathController {
     }
 
     pub fn poll(&self, duration: Option<Duration>) -> bool {
-      let start = Instant::now();
+        let start = Instant::now();
 
-      debug!("Polling for target...");
-      let modu = ffi::nfc_modulation{nmt: ffi::nfc_modulation_type::NMT_ISO14443A, nbr: ffi::nfc_baud_rate:: NBR_106};
-      unsafe {
-          let mut target: ffi::nfc_target = mem::uninitialized();
-          while initiator::poll_target(self.device, &modu, 1, 1, 1, &mut target) <= 0 {
-              if let Some(duration) = duration {
-                  if Instant::now() > (start + duration) {
-                      debug!("Poll timed out");
-                      return false;
-                  }
-              }
-          }
-          while initiator::select_passive_target(self.device, modu, (*target.nti.nai()).abtUid.as_mut_ptr(), (*target.nti.nai()).szUidLen, &mut target) <= 0 { }
-      }
-      debug!("Target detected!");
-      return true;
+        debug!("Polling for target...");
+        let modu = ffi::nfc_modulation {
+            nmt: ffi::nfc_modulation_type::NMT_ISO14443A,
+            nbr: ffi::nfc_baud_rate::NBR_106,
+        };
+        unsafe {
+            let mut target: ffi::nfc_target = mem::uninitialized();
+            while initiator::poll_target(self.device, &modu, 1, 1, 1, &mut target) <= 0 {
+                if let Some(duration) = duration {
+                    if Instant::now() > (start + duration) {
+                        debug!("Poll timed out");
+                        return false;
+                    }
+                }
+            }
+            while initiator::select_passive_target(
+                self.device,
+                modu,
+                (*target.nti.nai()).abtUid.as_mut_ptr(),
+                (*target.nti.nai()).szUidLen,
+                &mut target,
+            ) <= 0
+            {}
+        }
+        debug!("Target detected!");
+        return true;
     }
 
     /* https://en.wikipedia.org/wiki/Application_protocol_data_unit
@@ -286,7 +354,14 @@ impl OathController {
         2 bytes (if Lc was present in the command) in the range 1 to 65 535 denotes Ne of that value, or two zero bytes denotes 65 536
         3 bytes (if Lc was not present in the command), the first of which must be 0, denote Ne in the same way as two-byte Le
     */
-    pub fn send_apdu(&self, class: u8, instruction: u8, parameter1: u8, parameter2: u8, data: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    pub fn send_apdu(
+        &self,
+        class: u8,
+        instruction: u8,
+        parameter1: u8,
+        parameter2: u8,
+        data: Option<&[u8]>,
+    ) -> Result<Vec<u8>, String> {
         let mut tx_buf = vec![];
         let nc = match data {
             Some(ref data) => data.len(),
@@ -297,7 +372,7 @@ impl OathController {
         tx_buf.push(instruction);
         tx_buf.push(parameter1);
         tx_buf.push(parameter2);
- 
+
         // Data
         if nc > 255 {
             tx_buf.push(0);
@@ -314,9 +389,16 @@ impl OathController {
             s += &format!("{:02X} ", byte);
         }
         debug!(">> {}", s);
-        
+
         let mut rx_buf = Vec::with_capacity(256);
-        let bytes_read = initiator::transceive_bytes(self.device, tx_buf.as_ptr(), tx_buf.len(), rx_buf.as_mut_ptr(), 256, 0);
+        let bytes_read = initiator::transceive_bytes(
+            self.device,
+            tx_buf.as_ptr(),
+            tx_buf.len(),
+            rx_buf.as_mut_ptr(),
+            256,
+            0,
+        );
         if bytes_read < 0 {
             return Err("Error no bytes were returned".to_string());
         }
@@ -332,13 +414,13 @@ impl OathController {
         debug!("<< {}", s);
 
         {
-            let sw1 = match rx_buf.get((bytes_read-2) as usize) {
+            let sw1 = match rx_buf.get((bytes_read - 2) as usize) {
                 Some(sw1) => sw1,
-                None => return Err("Error invalid bytes were returned".to_string())
+                None => return Err("Error invalid bytes were returned".to_string()),
             };
-            let sw2 = match rx_buf.get((bytes_read-1) as usize) {
+            let sw2 = match rx_buf.get((bytes_read - 1) as usize) {
                 Some(sw2) => sw2,
-                None => return Err("Error invalid bytes were returned".to_string())
+                None => return Err("Error invalid bytes were returned".to_string()),
             };
             if *sw1 != 0x90 || *sw2 != 0x00 {
                 return Err(format!("Error {:x} {:x}", sw1, sw2));
@@ -351,27 +433,27 @@ impl OathController {
         // Switch to the OATH applet
         if let Err(err) = self.send_apdu(0, INS_SELECT, 0x04, 0, Some(&OATH_AID)) {
             credential.code = Err(err);
-            return credential
+            return credential;
         }
 
         let mut data = tlv(Tag::Name, credential.name.as_bytes());
-        let datetime = Utc::now();
+        let datetime = SystemTime::now();
         let challenge = time_challenge(Some(datetime));
         data.write(&tlv(Tag::Challenge, &challenge)).unwrap();
         let resp = match self.send_apdu(0, Ins::Calculate as u8, 0, 0x01, Some(&data)) {
             Ok(resp) => resp,
             Err(err) => {
                 credential.code = Err(err);
-                return credential
+                return credential;
             }
         };
 
-        let resp = parse_tlv(&resp[0..resp.len()-2]);
+        let resp = parse_tlv(&resp[0..resp.len() - 2]);
         let resp = match resp.get(&(Tag::TruncatedResponse as u8)) {
             Some(resp) => resp,
             None => {
                 credential.code = Err("Response tlv was invalid".to_string());
-                return credential
+                return credential;
             }
         };
         let mut rdr = Cursor::new(resp);
@@ -383,14 +465,14 @@ impl OathController {
                     8 => OathDigits::Eight,
                     _ => {
                         credential.code = Err("Digits can only be 6 or 8".to_owned());
-                        return credential
+                        return credential;
                     }
                 };
                 digits
-            },
+            }
             Err(err) => {
                 credential.code = Err(err.to_string());
-                return credential
+                return credential;
             }
         };
 
@@ -398,12 +480,23 @@ impl OathController {
             Ok(val) => val,
             Err(err) => {
                 credential.code = Err(err.to_string());
-                return credential
+                return credential;
             }
         };
-        let expiration = ((datetime.timestamp() + 30) / 30) * 30;
+        let expiration = ((datetime
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 30)
+            / 30)
+            * 30;
 
-        credential.code = Ok(OathCode{digits: digits, value: val, expiration: expiration as u32, steam: credential.steam});
+        credential.code = Ok(OathCode {
+            digits: digits,
+            value: val,
+            expiration: expiration as u32,
+            steam: credential.steam,
+        });
         credential
     }
 }
