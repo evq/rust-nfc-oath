@@ -31,13 +31,51 @@ mod tests {
             expiration: 0,
             steam: false,
         };
-        assert!(format!("{}", code) == "641143");
+        assert_eq!(format!("{}", code), "641143");
     }
 
     #[test]
     fn parse_tlv_works() {
         let resp = ::parse_tlv(&vec![0x76, 0x05, 0x06, 0x23, 0x80, 0xc3, 0x37, 0x90, 0x00]);
         println!("{:?}", resp);
+    }
+
+    #[test]
+    fn parse_list_works() {
+        let result = ::parse_list(&vec![
+            0x72, 0x1A, 0x21, 0x44, 0x6F, 0x6F, 0x72, 0x79, 0x3A, 0x64, 0x6F, 0x6F, 0x72, 0x79,
+            0x40, 0x63, 0x75, 0x74, 0x65, 0x6C, 0x61, 0x62, 0x2E, 0x68, 0x6F, 0x75, 0x73, 0x65,
+            0x90, 0x00,
+        ]);
+        let answer = vec![::OathCredential::new(
+            "Doory:doory@cutelab.house",
+            ::OathType::Totp,
+            false,
+            ::OathAlgo::Sha1,
+        )];
+        assert_eq!(answer, result.unwrap());
+
+        let result = ::parse_list(&vec![
+            0x72, 0x16, 0x21, 0x44, 0x6F, 0x6D, 0x61, 0x69, 0x6E, 0x3A, 0x79, 0x6F, 0x75, 0x72,
+            0x40, 0x65, 0x6D, 0x61, 0x69, 0x6C, 0x2E, 0x63, 0x6F, 0x6D, 0x72, 0x17, 0x21, 0x44,
+            0x6F, 0x6F, 0x72, 0x79, 0x3A, 0x65, 0x76, 0x40, 0x63, 0x75, 0x74, 0x65, 0x6C, 0x61,
+            0x62, 0x2E, 0x68, 0x6F, 0x75, 0x73, 0x65, 0x90, 0x00,
+        ]);
+        let answer = vec![
+            ::OathCredential::new(
+                "Domain:your@email.com",
+                ::OathType::Totp,
+                false,
+                ::OathAlgo::Sha1,
+            ),
+            ::OathCredential::new(
+                "Doory:ev@cutelab.house",
+                ::OathType::Totp,
+                false,
+                ::OathAlgo::Sha1,
+            ),
+        ];
+        assert_eq!(answer, result.unwrap());
     }
 
     #[test]
@@ -63,12 +101,13 @@ mod tests {
             let time = SystemTime::UNIX_EPOCH + dur;
             let result = ::time_challenge(Some(time));
 
-            assert!(*answer == result);
+            assert_eq!(*answer, result);
         }
     }
 
 }
 
+#[repr(u8)]
 pub enum Tag {
     Name = 0x71,
     NameList = 0x72,
@@ -84,20 +123,46 @@ pub enum Tag {
     Touch = 0x7c,
 }
 
+#[derive(Debug, PartialEq)]
+#[repr(u8)]
 pub enum OathAlgo {
     Sha1 = 0x01,
     Sha256 = 0x02,
 }
 
+impl OathAlgo {
+    fn from_u8(n: u8) -> Option<OathAlgo> {
+        match n {
+            0x01 => Some(OathAlgo::Sha1),
+            0x02 => Some(OathAlgo::Sha256),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+#[repr(u8)]
 pub enum OathType {
     Hotp = 0x10,
     Totp = 0x20,
 }
 
+impl OathType {
+    fn from_u8(n: u8) -> Option<OathType> {
+        match n {
+            0x10 => Some(OathType::Hotp),
+            0x20 => Some(OathType::Totp),
+            _ => None,
+        }
+    }
+}
+
+#[repr(u8)]
 pub enum Properties {
     RequireTouch = 0x02,
 }
 
+#[repr(u8)]
 pub enum Ins {
     Put = 0x01,
     Delete = 0x02,
@@ -110,6 +175,7 @@ pub enum Ins {
     SendRemaining = 0xa5,
 }
 
+#[repr(u8)]
 pub enum Mask {
     Algo = 0x0f,
     Type = 0xf0,
@@ -122,18 +188,20 @@ pub enum Sw {
     InvalidInstruction = 0x6d00,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum OathDigits {
     Six = 6,
     Eight = 8,
 }
 
+#[derive(Debug, PartialEq)]
 pub struct OathCode {
     pub digits: OathDigits,
     pub value: u32,
     pub expiration: u32, // FIXME
     pub steam: bool,
 }
+#[derive(Debug, PartialEq)]
 pub struct OathCredential {
     pub name: String,
     pub code: Result<OathCode, String>,
@@ -204,6 +272,35 @@ pub fn parse_tlv(data: &[u8]) -> HashMap<u8, Vec<u8>> {
         map.insert(tag, dst);
     }
     map
+}
+
+fn parse_list(resp: &[u8]) -> Result<Vec<OathCredential>, String> {
+    let mut rdr = Cursor::new(resp);
+
+    let mut result: Vec<OathCredential> = Vec::new();
+
+    while let Ok(tag) = rdr.read_u8() {
+        if tag != (Tag::NameList as u8) {
+            break;
+        }
+        let length = rdr.read_u8().or(Err("Missing length after tag"))?;
+
+        let type_code = rdr
+            .read_u8()
+            .or(Err("Malformed response, missing type code"))?;
+
+        let mut buf = vec![0; (length - 1) as usize];
+        rdr.read_exact(&mut buf)
+            .or(Err("Malformed response, incorrect key name length"))?;
+        result.push(OathCredential::new(
+            &String::from_utf8(buf).or(Err("Invalid key name"))?,
+            OathType::from_u8(type_code & (Mask::Type as u8)).ok_or("Invalid type")?,
+            false,
+            OathAlgo::from_u8(type_code & (Mask::Algo as u8)).ok_or("Invalid algorithm")?,
+        ));
+    }
+
+    return Ok(result);
 }
 
 pub fn time_challenge(datetime: Option<SystemTime>) -> Vec<u8> {
@@ -427,6 +524,14 @@ impl OathController {
             }
         }
         Ok(rx_buf)
+    }
+
+    pub fn list(&self) -> Result<Vec<OathCredential>, String> {
+        // Switch to the OATH applet
+        self.send_apdu(0, INS_SELECT, 0x04, 0, Some(&OATH_AID))?;
+
+        let resp = self.send_apdu(0, Ins::List as u8, 0, 0, None)?;
+        return parse_list(&resp);
     }
 
     pub fn calculate(&self, mut credential: OathCredential) -> OathCredential {

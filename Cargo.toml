@@ -1,19 +1,26 @@
 [package]
 authors = ["eV <ev@7pr.xyz>"]
 build = "build.rs"
-links = "nfc"
-name = "nfc-oath"
-version = "0.1.1"
 description = "A rust library for generating OTP codes using a hardware token and libnfc compatible reader."
 documentation = "https://github.com/evq/rust-nfc-oath"
 homepage = "https://github.com/evq/rust-nfc-oath"
-repository = "https://github.com/evq/rust-nfc-oath"
-readme = "README.md"
-keywords = ["device", "communication", "nfc"]
+keywords = [
+    "device",
+    "communication",
+    "nfc",
+]
 license = "MIT"
+links = "nfc"
+name = "nfc-oath"
+readme = "README.md"
+repository = "https://github.com/evq/rust-nfc-oath"
+version = "0.2.0"
 
 [dependencies]
 byteorder = "1"
 libc = "0.2.0"
 log = "0.3.8"
 nfc = "0.1.11"
+
+[dev-dependencies]
+env_logger = "0.4.3"
